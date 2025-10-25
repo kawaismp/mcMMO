@@ -1,52 +1,88 @@
 # This workflow automatically tests new commits and pull requests as they come in.
-# Note that this does not upload any artifacts, you will need to compile mcMMO manually
-# if you wish to create the actual jar.
-name: Compile and test
+# Note that this does not upload any artifacts by default. For convenience we
+# build and attach the produced JAR(s) and add a separate job to create a
+# release (manual or on main branch pushes).
+name: Compile, test and release
 
 on:
-  # We run our tests whenever the pom or a source file was touched.
-  # There is no need to run Maven when only the changelog was touched.
-  # We may also want to re-run this workflow when the workflow file itself
-  # was updated too.
   push:
     paths:
-    - 'src/**'
-    - 'pom.xml'
-    - '.github/workflows/maven.yml'
-
-  # Whenever someone submits a new pull request which modified the pom or a source file,
-  # we want to ensure it compiles successfully and that all tests will pass.
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/maven.yml'
   pull_request:
     paths:
-    - 'src/**'
-    - 'pom.xml'
+      - 'src/**'
+      - 'pom.xml'
+  # Allow manual runs to create a release for the latest commit
+  workflow_dispatch: {}
 
 jobs:
   compile:
     name: Maven compiler
     runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.sha }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # 1. Check out the current working tree
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Java 24 setup
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'adopt'
+          java-package: jdk
+          java-version: '24'
 
-    # 2. Setup Java 17 JDK (Adopt)
-    - name: Java 17 setup
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'adopt'
-        java-package: jdk
-        java-version: '17'
+      - name: Cache Maven packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
 
-    # 3. Setup local Maven package cache to speed up building
-    - name: Cache Maven packages
-      uses: actions/cache@v4
-      with:
-        path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-        restore-keys: ${{ runner.os }}-m2
+      - name: Build via Maven
+        id: build
+        run: mvn verify -B --file pom.xml -DdisableXmlReport=true
 
-    # 4. Build via Maven 
-    - name: Build via Maven
-      run: mvn verify -B --file pom.xml -DdisableXmlReport=true
+      - name: Record commit sha
+        id: commit
+        run: echo "sha=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Upload build JARs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: target/*.jar
+
+  release:
+    name: Create GitHub Release and upload JAR
+    runs-on: ubuntu-latest
+    needs: compile
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts from compile job
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: target
+
+      - name: Prepare commit id
+        run: |
+          # Short SHA for tag and release name
+          echo "COMMIT_ID=${GITHUB_SHA::8}" >> $GITHUB_ENV
+
+      - name: List downloaded files (debug)
+        run: ls -la target || true
+
+      - name: Create Release and upload JAR(s)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: release-${{ env.COMMIT_ID }}
+          name: mcMMO-${{ env.COMMIT_ID }}
+          files: target/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
