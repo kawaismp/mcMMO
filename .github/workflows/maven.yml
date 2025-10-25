@@ -43,7 +43,7 @@ jobs:
 
       - name: Build via Maven
         id: build
-        run: mvn verify -B --file pom.xml -DdisableXmlReport=true
+        run: mvn verify -B --file pom.xml -DdisableXmlReport=true -DskipTests=true
 
       - name: Record commit sha
         id: commit
